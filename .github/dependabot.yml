@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /ms-vehiculos
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(maven)"
+
+  - package-ecosystem: docker
+    directory: /ms-vehiculos
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(actions)"
