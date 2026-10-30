@@ -1,0 +1,379 @@
+name: CI/CD ms-vehiculos
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SONAR_ORGANIZATION: tu-organizacion
+  SONAR_PROJECT_KEY: tu-organizacion_ms-vehiculos
+  IMAGE_NAME: ms-vehiculos
+  TRIVY_IMAGE: aquasec/trivy:0.56.2
+
+jobs:
+  snyk-scan:
+    name: Snyk Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: ms-vehiculos/pom.xml
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk test Java dependencies
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --file=pom.xml --severity-threshold=high --json-file-output=snyk-report.json
+
+      - name: Upload Snyk report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: ms-vehiculos/snyk-report.json
+
+      - name: Snyk monitor (solo main)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk monitor --file=pom.xml --project-name=ms-vehiculos
+
+  test:
+    name: Tests + JaCoCo
+    needs: snyk-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: ms-vehiculos/pom.xml
+
+      - name: Build and test
+        run: mvn -B clean verify
+
+      - name: Upload JaCoCo Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: ms-vehiculos/target/site/jacoco/
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            ms-vehiculos/target/surefire-reports/
+            ms-vehiculos/target/failsafe-reports/
+
+  sonar-analysis:
+    name: SonarCloud Analysis
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: ms-vehiculos/pom.xml
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Run SonarCloud Analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }} \
+            -Dsonar.organization=${{ env.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.qualitygate.wait=true
+
+  build:
+    name: Build JAR
+    needs: sonar-analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+          cache-dependency-path: ms-vehiculos/pom.xml
+
+      - name: Package JAR
+        run: mvn -B clean package -DskipTests
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: ms-vehiculos/target/*.jar
+
+  docker:
+    name: Docker image + Trivy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Calcular etiqueta de imagen (SHA corto del commit = trazabilidad)
+        id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy - secretos expuestos y malas configuraciones (Dockerfile y Kubernetes)
+        run: |
+          docker run --rm -v "$PWD:/src" ${{ env.TRIVY_IMAGE }} fs --scanners secret --exit-code 1 /src
+          docker run --rm -v "$PWD:/src" ${{ env.TRIVY_IMAGE }} config --severity HIGH,CRITICAL --exit-code 1 /src
+
+      - name: Validar manifiestos Kubernetes
+        run: |
+          docker run --rm -v "$PWD/k8s:/k8s" ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict -summary -ignore-filename-pattern kind-config /k8s
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Construir imagen Docker
+        uses: docker/build-push-action@v6
+        with:
+          context: ms-vehiculos
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+          build-args: APP_VERSION=${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy - vulnerabilidades de la imagen (bloquea con HIGH/CRITICAL corregibles)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${{ env.TRIVY_IMAGE }} image \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+
+      - name: Verificar que el contenedor no corre como root
+        run: |
+          USER_ID=$(docker run --rm --entrypoint id ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} -u)
+          echo "UID dentro del contenedor: $USER_ID"
+          test "$USER_ID" != "0"
+
+      - name: Generar SBOM y exportar imagen
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out" ${{ env.TRIVY_IMAGE }} image \
+            --format cyclonedx --output /out/sbom.cdx.json ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+          docker save ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} | gzip > image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: |
+            ms-vehiculos/image.tar.gz
+            ms-vehiculos/sbom.cdx.json
+          retention-days: 3
+
+      - name: Publicar en GitHub Container Registry (solo main)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ env.IMAGE_NAME }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} $REPO:${{ steps.meta.outputs.tag }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} $REPO:latest
+          docker push $REPO:${{ steps.meta.outputs.tag }}
+          docker push $REPO:latest
+
+  deploy:
+    name: Deploy cloud simulado (Kubernetes)
+    needs: docker
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: cloud-sim
+    env:
+      TAG: ${{ needs.docker.outputs.tag }}
+    defaults:
+      run:
+        working-directory: ms-vehiculos
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ms-vehiculos
+
+      - name: Crear clúster Kubernetes multi-nodo (kind)
+        uses: helm/kind-action@v1
+        with:
+          config: ms-vehiculos/k8s/kind-config.yaml
+          cluster_name: cloud-sim
+
+      - name: Cargar imagen en los nodos del clúster
+        run: |
+          docker load < image.tar.gz
+          kind load docker-image $IMAGE_NAME:$TAG --name cloud-sim
+
+      - name: Instalar metrics-server (necesario para el autoescalado)
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
+          kubectl -n kube-system patch deployment metrics-server --type=json \
+            -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+          kubectl -n kube-system rollout status deployment/metrics-server --timeout=120s
+
+      - name: Crear namespace y Secret de BD (credenciales aleatorias, nunca en el repo)
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl -n vehiculos create secret generic vehiculos-db \
+            --from-literal=DB_USERNAME=vehiculos \
+            --from-literal=DB_PASSWORD="$(openssl rand -hex 16)" \
+            --from-literal=MYSQL_ROOT_PASSWORD="$(openssl rand -hex 16)" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Desplegar MySQL
+        run: |
+          kubectl apply -f k8s/10-config.yaml -f k8s/15-mysql.yaml -f k8s/50-networkpolicy.yaml
+          kubectl -n vehiculos rollout status statefulset/mysql --timeout=240s
+
+      - name: Desplegar microservicio
+        run: |
+          sed -i "s/IMAGE_TAG/$TAG/" k8s/20-deployment.yaml
+          kubectl apply -f k8s/20-deployment.yaml -f k8s/30-service.yaml -f k8s/40-scaling.yaml
+          kubectl -n vehiculos annotate deployment/vehiculos kubernetes.io/change-cause="commit $GITHUB_SHA" --overwrite
+
+      - name: Esperar rollout
+        id: rollout
+        run: kubectl -n vehiculos rollout status deployment/vehiculos --timeout=300s
+
+      - name: Smoke test contra el servicio desplegado
+        id: smoke
+        env:
+          BASE_URL: http://localhost:8080
+        run: bash scripts/smoke-test.sh
+
+      - name: Prueba de carga y verificación del autoescalado (HPA)
+        run: |
+          kubectl -n vehiculos run carga --image=busybox:1.36 --restart=Never -l app=vehiculos-carga \
+            --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"carga","image":"busybox:1.36","command":["sh","-c","end=$(($(date +%s)+90)); while [ $(date +%s) -lt $end ]; do wget -q -O- http://vehiculos/api/v1/vehiculos >/dev/null; done"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' || true
+          sleep 90
+          kubectl -n vehiculos get hpa vehiculos
+          kubectl -n vehiculos delete pod carga --ignore-not-found
+
+      - name: Rollback automático si falla el despliegue
+        if: failure() && (steps.rollout.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        run: |
+          echo "::error::Despliegue fallido, revirtiendo a la versión anterior"
+          kubectl -n vehiculos describe pods -l app=vehiculos | tail -60
+          kubectl -n vehiculos logs -l app=vehiculos --tail=80 || true
+          kubectl -n vehiculos rollout undo deployment/vehiculos || true
+
+      - name: Resumen del despliegue
+        if: always()
+        run: |
+          {
+            echo "## Despliegue en cloud simulado"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Imagen: \`$IMAGE_NAME:$TAG\`"
+            echo "- Clúster: kind \`cloud-sim\` (1 control-plane + 2 workers)"
+            echo '```'
+            kubectl -n vehiculos get pods,svc,hpa,pdb -o wide
+            echo
+            kubectl -n vehiculos rollout history deployment/vehiculos
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  alerta:
+    name: Alerta de pipeline bloqueado
+    needs: [snyk-scan, test, sonar-analysis, build, docker]
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Crear Issue de alerta en el repositorio
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "🚨 Pipeline bloqueado en ${GITHUB_REF_NAME} (${GITHUB_SHA::7})" \
+            --assignee "$GITHUB_ACTOR" \
+            --body "Un control de calidad o seguridad falló y el despliegue fue **bloqueado**.
+
+          | Job | Resultado |
+          |---|---|
+          | snyk-scan | ${{ needs.snyk-scan.result }} |
+          | test | ${{ needs.test.result }} |
+          | sonar-analysis | ${{ needs.sonar-analysis.result }} |
+          | build | ${{ needs.build.result }} |
+          | docker | ${{ needs.docker.result }} |
+
+          - Commit: ${GITHUB_SHA}
+          - Autor: @${GITHUB_ACTOR}
+          - Ejecución: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
