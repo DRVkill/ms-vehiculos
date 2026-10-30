@@ -1,0 +1,65 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: vehiculos
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vehiculos-allow
+  namespace: vehiculos
+spec:
+  podSelector:
+    matchLabels: { app: vehiculos }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { port: 9004, protocol: TCP }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: mysql }
+      ports:
+        - { port: 3306, protocol: TCP }
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-allow
+  namespace: vehiculos
+spec:
+  podSelector:
+    matchLabels: { app: mysql }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: vehiculos }
+      ports:
+        - { port: 3306, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: carga-allow
+  namespace: vehiculos
+spec:
+  podSelector:
+    matchLabels: { app: vehiculos-carga }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: vehiculos }
+      ports:
+        - { port: 9004, protocol: TCP }
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }

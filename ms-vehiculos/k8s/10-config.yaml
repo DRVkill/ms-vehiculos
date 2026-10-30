@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vehiculos-config
+  namespace: vehiculos
+data:
+  SERVER_PORT: "9004"
+  DB_URL: "jdbc:mysql://mysql:3306/vehiculos?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true"
+  DB_POOL_SIZE: "5"
+  SHOW_SQL: "false"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vehiculos-sa
+  namespace: vehiculos
+automountServiceAccountToken: false
