@@ -139,7 +139,9 @@ El job `deploy` crea un clúster Kubernetes con **kind** (1 control-plane + 2 wo
 
 ```bash
 cd ms-vehiculos
-./mvnw verify                      # pruebas + cobertura
+./mvnw verify
 cp .env.example .env
-docker compose up -d --build       # http://localhost:8080/swagger-ui/index.html
+docker compose up -d --build
 ```
+
+Swagger UI: http://localhost:8080/swagger-ui/index.html
