@@ -1,0 +1,13 @@
+target
+.git
+.github
+.vscode
+.idea
+.mvn
+mvnw
+mvnw.cmd
+k8s
+scripts
+*.md
+.env*
+docker-compose.yml
