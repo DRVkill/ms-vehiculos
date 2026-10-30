@@ -6,7 +6,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests \
  && cp target/*.jar app.jar
 
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:24-jre-alpine AS runtime
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.title="ms-vehiculos" \
       org.opencontainers.image.version="${APP_VERSION}"
