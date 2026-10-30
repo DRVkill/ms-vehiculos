@@ -50,7 +50,7 @@ jobs:
 
       - name: Upload Snyk report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: snyk-report
           path: ms-vehiculos/snyk-report.json
@@ -87,14 +87,14 @@ jobs:
 
       - name: Upload JaCoCo Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jacoco-report
           path: ms-vehiculos/target/site/jacoco/
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
@@ -164,7 +164,7 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: Upload JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: app-jar
           path: ms-vehiculos/target/*.jar
@@ -230,7 +230,7 @@ jobs:
             --format cyclonedx --output /out/sbom.cdx.json ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
           docker save ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} | gzip > image.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: docker-image
           path: |
